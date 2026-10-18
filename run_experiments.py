@@ -13,6 +13,8 @@ For every (method, classifier) pair the number of features k is chosen on the
 validation set (macro F1). The chosen setting is then evaluated ONCE on the
 test set. Feature rankings are computed on the training set only.
 
+Usage:  python run_experiments.py [features_folder] [results_folder]
+        (defaults: features, results)
 Run after extract_features.py.
 Output: results/results.csv          -> test results of every pair
         results/val_curves.csv       -> validation macro F1 for every k
@@ -20,6 +22,7 @@ Output: results/results.csv          -> test results of every pair
         results/confusion_matrix.png, results/f1_vs_k.png, results/report.txt
 """
 import os
+import sys
 import time
 import warnings
 
@@ -41,8 +44,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 warnings.filterwarnings("ignore")
 
-FEAT = "features"
-OUT = "results"
+FEAT = sys.argv[1] if len(sys.argv) > 1 else "features"
+OUT = sys.argv[2] if len(sys.argv) > 2 else "results"
 SEED = 42
 K_VALUES = [64, 128, 256, 512]
 METHODS = ["None", "PCA", "ANOVA", "MutualInfo", "RFE"]
@@ -62,6 +65,7 @@ def load(split):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    print(f"Features: {FEAT}/  ->  results: {OUT}/")
     X_tr, y_tr = load("train")
     X_va, y_va = load("val")
     X_te, y_te = load("test")
