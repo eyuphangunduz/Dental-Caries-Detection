@@ -3,5 +3,7 @@
 DENTEX/
 data/
 __pycache__/
+yolo_teeth/
+runs/
 *.pt
 *.zip
