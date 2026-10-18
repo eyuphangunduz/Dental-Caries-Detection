@@ -10,6 +10,8 @@ Labelling rule for each detected tooth:
   - overlaps an "other" annotation (impacted, periapical)    -> skipped
   - no overlap with any annotation (IoU < 0.1)                -> healthy
   - unclear overlap (0.1 - 0.3)                               -> skipped
+Duplicates are avoided: overlapping boxes are merged across classes
+(agnostic NMS), and each annotated tooth is matched to at most one detection.
 Train split only: carious teeth missed by the detector are added with their
 ground-truth box, so no positive training examples are lost.
 Val/test: missed carious teeth are only counted (reported as detector misses).
@@ -20,6 +22,7 @@ Output: crops/<split>/<label>/*.png and crops/<split>.csv
 import csv
 import json
 import os
+import shutil
 import sys
 from collections import Counter
 
@@ -58,6 +61,8 @@ def crop(img, box):
 
 def main():
     model = YOLO(MODEL)
+    if os.path.exists(OUT):
+        shutil.rmtree(OUT)  # start clean every run
 
     for split in ("train", "val", "test"):
         with open(os.path.join("data", f"{split}.json"), encoding="utf-8") as f:
@@ -76,17 +81,29 @@ def main():
         for n, im in enumerate(images, 1):
             img = Image.open(im["path"]).convert("L")
             gts = [(xywh_to_xyxy(t["bbox"]), t["label"], t["fdi"]) for t in im["teeth"]]
-            matched = set()
 
-            result = model.predict(im["path"], imgsz=1024, conf=0.25, verbose=False)[0]
-            for box, cls in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist()):
-                fdi = FDI_CLASSES[int(cls)]
+            result = model.predict(im["path"], imgsz=1024, conf=0.25,
+                                   agnostic_nms=True, verbose=False)[0]
+            dets = [(box, FDI_CLASSES[int(cls)])
+                    for box, cls in zip(result.boxes.xyxy.tolist(), result.boxes.cls.tolist())]
+
+            # Best annotation for every detection
+            info = []
+            for box, _ in dets:
                 ious = [iou(box, g[0]) for g in gts]
                 best = max(range(len(ious)), key=ious.__getitem__) if ious else None
-                best_iou = ious[best] if ious else 0.0
+                info.append((best, ious[best] if ious else 0.0))
 
+            # Each annotated tooth keeps only its single best-matching detection
+            assigned = {}  # annotation index -> (detection index, iou)
+            for d, (best, best_iou) in enumerate(info):
+                if best_iou >= IOU_MATCH and (best not in assigned or best_iou > assigned[best][1]):
+                    assigned[best] = (d, best_iou)
+
+            for d, ((box, fdi), (best, best_iou)) in enumerate(zip(dets, info)):
                 if best_iou >= IOU_MATCH:
-                    matched.add(best)
+                    if assigned[best][0] != d:
+                        continue  # duplicate box on an already used tooth
                     label = gts[best][1]
                     if label == "other":
                         continue
@@ -98,7 +115,7 @@ def main():
 
             # Carious teeth the detector did not find
             for i, (gbox, label, fdi) in enumerate(gts):
-                if i in matched or label == "other":
+                if i in assigned or label == "other":
                     continue
                 if split == "train":
                     save(img, gbox, label, fdi, im["file_name"], "ground_truth")
