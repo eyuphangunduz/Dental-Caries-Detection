@@ -5,5 +5,8 @@ data/
 __pycache__/
 yolo_teeth/
 runs/
+crops/
+features/
+models/
 *.pt
 *.zip
