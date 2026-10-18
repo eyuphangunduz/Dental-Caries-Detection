@@ -9,5 +9,6 @@ crops/
 features/
 models/
 *.joblib
+*_result.png
 *.pt
 *.zip
