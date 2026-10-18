@@ -8,5 +8,6 @@ runs/
 crops/
 features/
 models/
+*.joblib
 *.pt
 *.zip
