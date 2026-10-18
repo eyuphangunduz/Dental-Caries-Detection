@@ -1,0 +1,7 @@
+.venv/
+.idea/
+DENTEX/
+data/
+__pycache__/
+*.pt
+*.zip
