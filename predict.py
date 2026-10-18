@@ -122,9 +122,11 @@ def analyze(image, loaded_models):
 
     if not findings:
         text = "Çürük tespit edilmedi"
-        tb = draw.textbbox((20, 20), text, font=font)
+        width = draw.textbbox((0, 0), text, font=font)[2]
+        pos = (rgb.width - width - 30, 30)   # top-right corner
+        tb = draw.textbbox(pos, text, font=font)
         draw.rectangle((tb[0] - 8, tb[1] - 8, tb[2] + 8, tb[3] + 8), fill=(40, 160, 70))
-        draw.text((20, 20), text, fill=(255, 255, 255), font=font)
+        draw.text(pos, text, fill=(255, 255, 255), font=font)
 
     return rgb, sorted(findings), len(boxes)
 
