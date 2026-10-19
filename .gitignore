@@ -8,6 +8,7 @@ runs/
 crops/
 features/
 models/
+*.npz
 *.joblib
 *_result.png
 *.pt

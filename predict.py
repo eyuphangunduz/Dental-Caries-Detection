@@ -4,11 +4,13 @@ predict.py
 Runs the full system on one panoramic X-ray:
   1) YOLO finds and numbers every tooth            (models/best.pt)
   2) every tooth is cropped (same 10% margin as in training)
-  3) the fine-tuned ResNet-50 turns each crop into 2048 features
-                                                   (models/resnet50_finetuned.pt)
-  4) scaler + feature selection + SVM classify each tooth as
-     healthy / caries / deep caries               (models/best_model.joblib)
-  5) carious teeth are drawn on the X-ray with their FDI number and label
+  3) the fine-tuned ResNet-50 turns each crop into 2048 features and also
+     gives its own 3-class prediction           (models/resnet50_finetuned.pt)
+  4) scaler + feature selection + SVM classify each tooth  (models/best_model.joblib)
+  5) if models/decision.json exists (made by tune_threshold.py), the CNN and SVM
+     probabilities are combined (ensemble) and a threshold is applied,
+     otherwise the SVM decision is used
+  6) carious teeth are drawn on the X-ray with their FDI number and label
 
 Usage:  python predict.py [path/to/xray.png] [output.png]
         Without arguments the first image of the test split (data/test.json) is used.
@@ -20,6 +22,7 @@ import os
 import sys
 
 import joblib
+import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 from torchvision import models, transforms
@@ -40,19 +43,31 @@ TRANSFORM = transforms.Compose([
 ])
 
 
+def softmax(x):
+    x = np.asarray(x, dtype=np.float64)
+    e = np.exp(x - x.max(axis=1, keepdims=True))
+    return e / e.sum(axis=1, keepdims=True)
+
+
 def load_models():
-    """Loads the three trained models once (they are reused for every X-ray)."""
+    """Loads the trained models once (they are reused for every X-ray)."""
     yolo = YOLO(os.path.join(MODEL_DIR, "best.pt"))
 
     cnn = models.resnet50(weights=None)
     cnn.fc = torch.nn.Linear(cnn.fc.in_features, 3)
     cnn.load_state_dict(torch.load(os.path.join(MODEL_DIR, "resnet50_finetuned.pt"),
                                    map_location="cpu"))
-    cnn.fc = torch.nn.Identity()   # use it as a 2048-feature extractor
     cnn.eval()
+    backbone = torch.nn.Sequential(*list(cnn.children())[:-1])  # everything except fc
 
     bundle = joblib.load(os.path.join(MODEL_DIR, "best_model.joblib"))
-    return yolo, cnn, bundle
+
+    decision = None
+    decision_path = os.path.join(MODEL_DIR, "decision.json")
+    if os.path.exists(decision_path):
+        with open(decision_path, encoding="utf-8") as f:
+            decision = json.load(f)
+    return yolo, cnn, backbone, bundle, decision
 
 
 def crop(img, box):
@@ -74,6 +89,25 @@ def select_features(X, bundle):
     return X
 
 
+def tooth_scores(crops, cnn, backbone, bundle):
+    """Returns (CNN probabilities, SVM probabilities, SVM features) for a list of tooth crops."""
+    batch = torch.stack([TRANSFORM(c) for c in crops])
+    with torch.no_grad():
+        features = backbone(batch).flatten(1)
+        logits = cnn.fc(features)
+    selected = select_features(features.numpy(), bundle)
+    cnn_prob = softmax(logits.numpy())
+    svm_prob = softmax(bundle["classifier"].decision_function(selected))
+    return cnn_prob, svm_prob, selected
+
+
+def decide(cnn_prob, svm_prob, decision):
+    """Ensemble + threshold (bias) rule chosen by tune_threshold.py."""
+    w = decision["cnn_weight"]
+    prob = w * cnn_prob + (1 - w) * svm_prob
+    return np.argmax(np.log(prob + 1e-9) + np.array(decision["bias"]), axis=1)
+
+
 def get_font(size):
     for name in ("arial.ttf", "DejaVuSans.ttf"):
         try:
@@ -89,7 +123,7 @@ def analyze(image, loaded_models):
     Returns (annotated image, findings, number of detected teeth).
     findings = list of (fdi_number, class_id) for carious teeth.
     """
-    yolo, cnn, bundle = loaded_models
+    yolo, cnn, backbone, bundle, decision = loaded_models
     rgb = image.convert("RGB")
     gray = image.convert("L")
 
@@ -102,10 +136,12 @@ def analyze(image, loaded_models):
     font = get_font(max(24, rgb.width // 70))
 
     if boxes:
-        batch = torch.stack([TRANSFORM(crop(gray, b)) for b in boxes])
-        with torch.no_grad():
-            features = cnn(batch).numpy()
-        preds = bundle["classifier"].predict(select_features(features, bundle))
+        cnn_prob, svm_prob, selected = tooth_scores([crop(gray, b) for b in boxes],
+                                                    cnn, backbone, bundle)
+        if decision:
+            preds = decide(cnn_prob, svm_prob, decision)
+        else:
+            preds = bundle["classifier"].predict(selected)
 
         for box, fdi, pred in zip(boxes, fdis, preds):
             pred = int(pred)
@@ -158,6 +194,7 @@ def main():
 
     print("Loading models...")
     loaded = load_models()
+    print("Decision rule:", "ensemble + threshold" if loaded[4] else "SVM only")
     print("Analyzing:", path)
     annotated, findings, n_teeth = analyze(Image.open(path), loaded)
     annotated.save(out_path)
